@@ -1,8 +1,8 @@
 import numpy as np
 import scipy.optimize as opt
 
-from Orange.data import Table
-from Orange.classification import Learner, Model
+from Orange.data import Table, Storage, Instance
+from Orange.classification import Learner, Model, LogisticRegressionLearner
 from Orange.preprocess import (RemoveNaNClasses, RemoveNaNColumns,
                                Impute, Normalize)
 
@@ -106,7 +106,8 @@ class LogisticRegression(Learner):
                            bounds=bounds, jac=self.gradient)
         return out.x
 
-    def phi(self, t):
+    @staticmethod
+    def phi(t):
         # logistic function, returns 1 / (1 + exp(-t))
         idx = t > 0
         out = np.empty(t.size, dtype=np.float)
@@ -154,13 +155,45 @@ class LogisticClassifier(Model):
         self.fit_intercept = fit_intercept
         self.intercept_scaling = intercept_scaling
 
+    def predict(self, X):
+        ps = self.predict_proba(X)
+        values = ps.argmax(axis=1)
+        return values, ps
+
+    def predict_proba(self, X):
+        att = X.shape[1]
+        Xr = np.concatenate([X]+[r.evaluate_data(X)[:, np.newaxis] for r in self.rules],
+                            axis=1)
+        if self.fit_intercept:
+            Xr = LogisticRegression.add_intercept(self.intercept_scaling, Xr)
+        ps = np.empty((Xr.shape[0], len(self.domain.class_var.values)),
+                      dtype=np.float)
+        for i, cl in enumerate(self.domain.class_var.values):
+            z = Xr.dot(self.w[i])
+            ps[:,i] = LogisticRegression.phi(z)
+        ps = ps / np.linalg.norm(ps, ord=1, axis=1)[:,np.newaxis]
+        return ps
+
 
 if __name__ == "__main__":
-    data = Table('breast-cancer')
+    import Orange
+    data = Table('iris')
     #data = Table('iris')
     rule_learner = rules.RulesStar(evc=True)
+    learners = [LogisticRegression(rule_learner = rule_learner),
+                LogisticRegression(),
+                LogisticRegressionLearner()]
+    res = Orange.evaluation.CrossValidation(data, learners, k=2)
+    for l, ca in zip(learners, Orange.evaluation.CA(res)):
+        print("learner: {}\nCA: {}\n".format(l, ca))
+
+    """rule_learner = rules.RulesStar(evc=True)
     learner = LogisticRegression(rule_learner = rule_learner)
     classifier = learner(data)
+    cls = classifier(data[:10])
+    for c in cls:
+        print (c)"""
+
 
     #for rule in classifier.rule_list:
     #    print(rule.curr_class_dist.tolist(), rule, rule.quality)

@@ -1,7 +1,6 @@
 import numpy as np
 import bottleneck as bn
 from collections import defaultdict, Counter
-import heapq
 from scipy.optimize import brentq
 from scipy.special import gammaincc
 
