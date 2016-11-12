@@ -17,7 +17,8 @@ class RulesStar(_RuleLearner):
     quicker than a standard separate and conquer algorithm, such as CN2. 
     """
     def __init__(self, preprocessors=None, base_rules=None, m=2, evc=True,
-                 max_rule_length=5, width=100, default_alpha=1.0, parent_alpha=1.0):
+                 max_rule_length=5, width=100, default_alpha=1.0,
+                 parent_alpha=1.0, add_sub_rules=False):
         """
         Construct a rule learner.
 
@@ -30,7 +31,8 @@ class RulesStar(_RuleLearner):
         width: The width of star (beam) in the searching procedure.
         default_alpha: Required significance of rules calculated with LRS
         parent_alpha: Required significance of each condition in a rule (with 
-            respect to the parent rule). 
+            respect to the parent rule).
+        add_sub_rules: Add all sub rules of best rules?
         """
         super().__init__(preprocessors, base_rules)
         # important to set evc first to initialize all components
@@ -48,6 +50,7 @@ class RulesStar(_RuleLearner):
         self.m = m
         self.max_rule_length = max_rule_length
         self.width = width
+        self.add_sub_rules = add_sub_rules
 
     def fit_storage(self, data):
         X, Y, W = data.X, data.Y, data.W if data.W else None
@@ -125,13 +128,26 @@ class RulesStar(_RuleLearner):
         rule_list = []
         visited = set()
         for r in bestr:
-            rkey = (r.curr_class_dist.tostring(), r.target_class)
-            if rkey not in visited:
-                r.create_model()
-                rule_list.append(r)
-            visited.add(rkey)
+            # add r
+            self.add_rule(rule_list, visited, r)
+            if self.add_sub_rules:
+                tr = r
+                while tr.parent_rule is not None:
+                    # add parent rule
+                    self.add_rule(rule_list, visited, tr.parent_rule)
+                    tr = tr.parent_rule
         rule_list = sorted(rule_list, key = lambda r: -r.quality)
         return CN2UnorderedClassifier(domain=self.domain, rule_list=rule_list)
+
+    @staticmethod
+    def add_rule(rule_list, visited, rule):
+        if rule.quality < rule.prior_class_dist[rule.target_class] / rule.prior_class_dist.sum() + 0.01:
+            return
+        rkey = (rule.curr_class_dist.tostring(), rule.target_class)
+        if rkey not in visited:
+            rule.create_model()
+            rule_list.append(rule)
+        visited.add(rkey)
 
     @staticmethod
     def update_best(bestr, bestq, rule, Y):
