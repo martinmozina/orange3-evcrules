@@ -9,9 +9,11 @@ datasets = ['ionosphere', 'adult_sample', 'iris', 'ionosphere', 'breast-cancer',
 for d in datasets:
     data = Table(d)
     rule_learner = rules.RulesStar(evc=True, add_sub_rules=True)
+    rule_learner_m = rules.RulesStar(evc=False, m=22, add_sub_rules=True)
     # compare lr with rules, lr without rules and sklearn's lr
-    learners = [LRRulesLearner(opt_penalty=True, rule_learner=rule_learner), #opt_penalty=True, rule_learner = rule_learner),
-                LRRulesLearner(opt_penalty=True), #opt_penalty=True),
+    learners = [LRRulesLearner(opt_penalty=True, rule_learner=rule_learner),
+                LRRulesLearner(opt_penalty=True, rule_learner=rule_learner_m),
+                LRRulesLearner(opt_penalty=True), 
                 LogisticRegressionLearner(C=1),
                 NaiveBayesLearner(),
                 RandomForestLearner()]
