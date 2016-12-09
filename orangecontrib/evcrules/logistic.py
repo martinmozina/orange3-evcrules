@@ -81,6 +81,7 @@ class LRRulesLearner(Learner):
         gamma = self.get_gamma(X, rules)
         # build model
         w = []
+        se = []
         if len(self.domain.class_var.values) > 2:
             for cli, cls in enumerate(self.domain.class_var.values):
                 # create class with domain {-1, 1}
@@ -88,14 +89,16 @@ class LRRulesLearner(Learner):
                 yc[Y != cli] = -1
                 # set bounds
                 bounds = self.set_bounds(X, rules, cli)
-                w.append(self.fit_params(Xr, yc, bounds, gamma))
+                x, s = self.fit_params(Xr, yc, bounds, gamma)
+                w.append(x)
+                se.append(s)
         else:
             yc = np.ones_like(Y)
             yc[Y != 0] = -1
             bounds = self.set_bounds(X, rules, 0)
-            x = self.fit_params(Xr, yc, bounds, gamma)
-            w.append(x)
-            w.append(-x)
+            x, s = self.fit_params(Xr, yc, bounds, gamma)
+            w = [x, -x]
+            se = [s, s]
         # remove zero weights and corresponding rules
         to_keep, final_rules = list(range(X.shape[1])), []
         for ri, r in enumerate(rules):
@@ -105,7 +108,8 @@ class LRRulesLearner(Learner):
         if self.fit_intercept:
             to_keep.append(-1)
         w = [wi[to_keep] for wi in w]
-        return LRRulesClassifier(w, final_rules, self.fit_intercept,
+        se = [s[to_keep] for s in se]
+        return LRRulesClassifier(w, se, final_rules, self.fit_intercept,
                                  self.intercept_scaling, self.domain, data.domain)
 
     def tune_penalty(self, data):
@@ -129,6 +133,7 @@ class LRRulesLearner(Learner):
             gamma.append(0)
         return np.array(gamma)
 
+
     @staticmethod
     def add_intercept(intercept, X):
         return np.hstack((X, intercept * np.ones((X.shape[0], 1))))
@@ -148,7 +153,16 @@ class LRRulesLearner(Learner):
         w0 = np.zeros(X.shape[1])
         out = opt.minimize(self.ll, w0, args=(X, y, gamma), method='TNC',
                            bounds=bounds, jac=self.gradient)
-        return out.x
+        w = out.x
+        # compute standard errors (s)
+        z = self.phi(X.dot(w))
+        weights = z * (1 - z)
+        xwx = (X.T * weights).dot(X)
+        diag = np.diag_indices(X.shape[1])
+        xwx[diag] += self.penalty
+        inv = np.linalg.inv(xwx)
+        s = inv[diag]
+        return w, s
 
     @staticmethod
     def phi(t):
@@ -191,10 +205,11 @@ class LRRulesLearner(Learner):
         return gradll
 
 class LRRulesClassifier(Model):
-    def __init__(self, w, rules, fit_intercept, intercept_scaling,
+    def __init__(self, w, se, rules, fit_intercept, intercept_scaling,
                  domain, postrule_domain):
         super().__init__(domain)
-        self.w = w
+        self.w = np.array(w)
+        self.se = np.array(se)
         self.rule_list = rules
         self.fit_intercept = fit_intercept
         self.intercept_scaling = intercept_scaling
@@ -218,6 +233,23 @@ class LRRulesClassifier(Model):
             ps[:,i] = LRRulesLearner.phi(z)
         ps = ps / np.linalg.norm(ps, ord=1, axis=1)[:,np.newaxis]
         return ps
+
+    def __str__(self):
+        desc = ""
+        names = [at.name for at in self.postrule_domain.attributes] + \
+                [str(r) for r in self.rule_list]
+        if self.fit_intercept:
+            names.append('intercept({})'.format(self.intercept_scaling))
+        desc += '\t'.join(['{}={}'.format(self.domain.class_var.name, cl)
+                           for i, cl in enumerate(self.domain.class_var.values)]) + \
+                '\t' + 'Attribute' + '\n'
+        for ni, n in enumerate(names):
+            desc += '\t'.join(['{:.3}({:.3},{:.3})'.format(self.w[i,ni],
+                                                           self.w[i,ni]-1.96*self.se[i,ni],
+                                                           self.w[i,ni]+1.96*self.se[i,ni])
+                               for i, cl in enumerate(self.domain.class_var.values)]) + \
+                    '\t' + n + '\n'
+        return desc
 
 
 if __name__ == "__main__":
