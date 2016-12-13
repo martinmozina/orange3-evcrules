@@ -238,7 +238,7 @@ class LRRulesClassifier(Model):
 
     def __str__(self):
         desc = """Logistic regression model
-                  (note: coeficients are learned from normalized values of attributes)"""
+(note: coeficients are learned from normalized values of attributes)\n"""
         names = [at.name for at in self.postrule_domain.attributes] + \
                 [str(r) for r in self.rule_list]
         if self.fit_intercept:
