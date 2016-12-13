@@ -6,6 +6,8 @@ from Orange.classification import Learner, Model
 from Orange.evaluation import CrossValidation, LogLoss
 from Orange.preprocess import (RemoveNaNClasses, RemoveNaNColumns,
                                Impute, Normalize, Continuize)
+from Orange.preprocess.transformation import Normalizer
+
 import orangecontrib.evcrules.rules as rules
 
 class LRRulesLearner(Learner):
@@ -235,7 +237,8 @@ class LRRulesClassifier(Model):
         return ps
 
     def __str__(self):
-        desc = ""
+        desc = """Logistic regression model
+                  (note: coeficients are learned from normalized values of attributes)"""
         names = [at.name for at in self.postrule_domain.attributes] + \
                 [str(r) for r in self.rule_list]
         if self.fit_intercept:

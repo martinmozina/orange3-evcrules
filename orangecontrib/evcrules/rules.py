@@ -20,7 +20,7 @@ class RulesStar(_RuleLearner):
     """
     def __init__(self, preprocessors=None, base_rules=None, m=2, evc=True,
                  max_rule_length=5, width=100, default_alpha=1.0,
-                 parent_alpha=1.0, add_sub_rules=False):
+                 parent_alpha=1.0, add_sub_rules=False, target_class=None):
         """
         Construct a rule learner.
 
@@ -35,6 +35,7 @@ class RulesStar(_RuleLearner):
         parent_alpha: Required significance of each condition in a rule (with 
             respect to the parent rule).
         add_sub_rules: Add all sub rules of best rules?
+        target_class:
         """
         super().__init__(preprocessors, base_rules)
         self.rule_finder.search_strategy.evaluate = False
@@ -56,6 +57,7 @@ class RulesStar(_RuleLearner):
         self.width = width
         self.add_sub_rules = add_sub_rules
         self.evds = None
+        self.target_class = target_class
 
     def fit_storage(self, data):
         X, Y, W = data.X, data.Y, data.W if data.W else None
@@ -133,6 +135,8 @@ class RulesStar(_RuleLearner):
         visited = set()
         for r in bestr:
             # add r
+            if r is None:
+                continue
             self.add_rule(rule_list, visited, r)
             if self.add_sub_rules:
                 tr = r
@@ -146,11 +150,12 @@ class RulesStar(_RuleLearner):
     def create_initial_star(self, X, Y, W, prior):
         star = []
         for cli, cls in enumerate(self.domain.class_var.values):
-            rules = self.rule_finder.search_strategy.initialise_rule(
-                X, Y, W, cli, self.base_rules, self.domain, prior, prior,
-                self.evaluator, self.rule_finder.complexity_evaluator,
-                self.rule_validator, self.rule_finder.general_validator)
-            star.extend(rules)
+            if self.target_class is None or cli == self.target_class or cls == self.target_class:
+                rules = self.rule_finder.search_strategy.initialise_rule(
+                    X, Y, W, cli, self.base_rules, self.domain, prior, prior,
+                    self.evaluator, self.rule_finder.complexity_evaluator,
+                    self.rule_validator, self.rule_finder.general_validator)
+                star.extend(rules)
         for r in star:
             r.default_rule = r
             r.do_evaluate()
