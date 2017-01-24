@@ -163,7 +163,7 @@ class LRRulesLearner(Learner):
         diag = np.diag_indices(X.shape[1])
         xwx[diag] += self.penalty
         inv = np.linalg.inv(xwx)
-        s = inv[diag]
+        s = np.sqrt(inv[diag])
         return w, s
 
     @staticmethod
@@ -262,6 +262,8 @@ if __name__ == "__main__":
 
     # learn a logistic regression using rules and basic attributes
     rule_learner = rules.RulesStar(evc=True, add_sub_rules=True)
+    rule_learner.calculate_evds(data)
+    evds = rule_learner.evds
     lr = LRRulesLearner(rule_learner=rule_learner)(data)
     print("Relevant rules when basic attributes are used: ")
     for rule in lr.rule_list:
@@ -269,6 +271,7 @@ if __name__ == "__main__":
 
     # learn a logistic regression using rules and basic attributes
     rule_learner = rules.RulesStar(evc=True, add_sub_rules=True)
+    rule_learner.evds = evds
     lr = LRRulesLearner(rule_learner=rule_learner, basic_attributes=False)(data)
     print("Relevant rules without basic attributes:")
     for rule in lr.rule_list:
