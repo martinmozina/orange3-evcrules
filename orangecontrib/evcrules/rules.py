@@ -91,6 +91,8 @@ class RulesStar(_RuleLearner):
             # specialize each rule in star
             new_star = []
             for r in star:
+                #r.create_model()
+                #print("s", r, r.curr_class_dist)
                 # skip rules with pure distributions
                 if r.curr_class_dist[r.target_class] == r.curr_class_dist.sum():
                     continue
@@ -106,8 +108,6 @@ class RulesStar(_RuleLearner):
                             nr.quality >= nr.parent_rule.quality):
                         # rule is consistent with basic conditions
                         # can it be new best?
-                        nr.create_model()
-                        #print("cand", nr, self.rule_validator.validate_rule(nr))
                         if self.rule_validator.validate_rule(nr):
                             self.update_best(bestr, bestq, nr, Y)
                         # can it be further specialized?
@@ -115,7 +115,6 @@ class RulesStar(_RuleLearner):
                                 nr.length < self.max_rule_length):
                             new_star.append(nr)
                     visited.add(rkey)
-            
             # assign a rank to each rule in new star
             nrules = len(new_star)
             inst_quality = np.zeros((X.shape[0], nrules))
@@ -377,7 +376,6 @@ class EVCEvaluator(Evaluator):
         self.evds = evds
 
     def evaluate_rule(self, rule):
-
         # predicted class
         tc = rule.target_class
 
@@ -386,8 +384,9 @@ class EVCEvaluator(Evaluator):
         dist_sum = dist.sum()
         acc = dist[tc]  / dist_sum
         # prior class distribution
-        if hasattr(rule, "default_rule"):
-            dr_length = rule.default_rule.length
+        # TODO: default_rule has no influence anymore
+        if hasattr(rule, "default_rule") and rule.default_rule.length>0:
+            dr_length = rule.default_rule.length - 1 # rule.default_rule.length
         else:
             dr_length = 0
         p_dist = rule.prior_class_dist
@@ -398,7 +397,7 @@ class EVCEvaluator(Evaluator):
         if rule.length > len(self.evds[tc]):
             evd = self.evds[tc][-1]
         else:
-            evd = self.evds[tc][rule.length] #-dr_length]
+            evd = self.evds[tc][rule.length-dr_length] #-dr_length]
 
         if evd.mu < 0.0001: # return as if rule distribution is not optimistic
             return (dist[tc] + self.m * pa) / (dist_sum + self.m)
@@ -427,12 +426,14 @@ class EVCEvaluator(Evaluator):
             else:
                 ePos = pa * dist_sum
         q = (ePos + self.m * pa) / (dist_sum + self.m)
+        # special case: when argument is evaluated low
+        if hasattr(rule, "default_rule") and rule.default_rule.length>0 and \
+                rule.default_rule.length == rule.length and q < pa+0.01:
+            return min(pa + 0.01, acc)
         if q > pa:
             return q
         if acc < pa:
             return acc - 0.01
-        if dr_length == rule.length: # this rule should be evaluated better that default
-            return min(pa + 0.01, acc)
         return pa - 0.01 + 0.01*chi/evd.median
 
 class EVCValidator(Validator):
@@ -447,8 +448,9 @@ class EVCValidator(Validator):
         dist = rule.curr_class_dist
 
         if self.default_alpha < 1.0:
-            if hasattr(rule, "default_rule"):
-                dr_length = rule.default_rule.length
+            # TODO: fix that, default_rule has no influence any more
+            if hasattr(rule, "default_rule") and rule.default_rule.length > 0:
+                dr_length = rule.default_rule.length - 1 # rule.default_rule.length
             else:
                 dr_length = 0
             # prior class distribution
@@ -456,7 +458,7 @@ class EVCValidator(Validator):
             if rule.length > len(self.evds[tc]):
                 evd = self.evds[tc][-1]
             else:
-                evd = self.evds[tc][rule.length] #-dr_length]
+                evd = self.evds[tc][rule.length-dr_length] #-dr_length]
             p = dist[tc]
             n = dist.sum() - p
             P = p_dist[tc]
