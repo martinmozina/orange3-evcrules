@@ -1,27 +1,27 @@
+from collections import defaultdict, Counter
+from warnings import warn
 import numpy as np
 import bottleneck as bn
-from collections import defaultdict, Counter
 from scipy.optimize import brentq
 from scipy.special import gammaincc
 from scipy.stats import chi2
-from warnings import warn
 
 from Orange.data import Table
 from Orange.classification.rules import Rule, _RuleLearner, _RuleClassifier, \
-    Evaluator, CN2UnorderedClassifier, get_dist, LRSValidator, Validator 
-        
+    Evaluator, CN2UnorderedClassifier, get_dist, LRSValidator, Validator
 
 class RulesStar(_RuleLearner):
     """
     A rule learning algorithm that learns all rules in one pass without
     covering and separating. It uses a larger star of rules, therefore its
-    memory consumption will be higher. On the other hand, it learns rules much 
-    quicker than a standard separate and conquer algorithm, such as CN2. 
+    memory consumption will be higher. On the other hand, it learns rules much
+    quicker than a standard separate and conquer algorithm, such as CN2.
     """
     def __init__(self, preprocessors=None, base_rules=None, m=2, evc=True,
-                 max_rule_length=5, width=100, default_alpha=1.0,
+                 max_rule_length=5, min_covered_examples=1, width=100, default_alpha=1.0,
                  parent_alpha=1.0, add_sub_rules=False, target_class=None,
-                 target_instances=None, classifier=CN2UnorderedClassifier):
+                 target_instances=None, classifier=CN2UnorderedClassifier,
+                 to_calc_evds=False, min_unique_examples=1):
         """
         Construct a rule learner.
 
@@ -33,7 +33,7 @@ class RulesStar(_RuleLearner):
         max_rule_length: Maximum number of conditions in a rule.
         width: The width of star (beam) in the searching procedure.
         default_alpha: Required significance of rules calculated with LRS
-        parent_alpha: Required significance of each condition in a rule (with 
+        parent_alpha: Required significance of each condition in a rule (with
             respect to the parent rule).
         add_sub_rules: Add all sub rules of best rules?
         target_class:
@@ -54,6 +54,7 @@ class RulesStar(_RuleLearner):
         self.parent_alpha = parent_alpha
         self.m = m
         self.max_rule_length = max_rule_length
+        self.min_covered_examples = min_covered_examples
         self.width = width
         self.add_sub_rules = add_sub_rules
         self.evds = None
@@ -61,21 +62,25 @@ class RulesStar(_RuleLearner):
         self.target_instances = target_instances  # learn rules for specific instances only
         self.store_intermediate_rules = False
         self.classifier = classifier
-
+        self.min_unique_examples = min_unique_examples
+        self.to_calc_evds = to_calc_evds
 
     def fit_storage(self, data):
         X, Y, W = data.X, data.Y, data.W if data.W else None
         Y = Y.astype(dtype=int)
 
         # estimate extreme value distributions (if necessary)
+        if self.evc and self.to_calc_evds:
+            self.calculate_evds(data)
         if self.evc and not self.evds:
             warn("""Extreme value distributions not set.
-                    Set evds property or run calculate_evds().
-                    Returning an empty set of rules.""")
-            return CN2UnorderedClassifier(domain=self.domain, rule_list=[])
+                    Need to calculate them first. """)
+            self.calculate_evds(data)
 
         prior = get_dist(Y, W, self.domain)
-        prior_prob = prior / prior.sum()
+        if not prior.sum():
+            return self.classifier(domain=self.domain, rule_list=[])
+
         # create initial star
         star = self.create_initial_star(X, Y, W, prior)
         # use visited to prevent learning the same rule all over again
@@ -84,16 +89,16 @@ class RulesStar(_RuleLearner):
         bestr = np.empty(X.shape[0], dtype=object)
         bestq = np.zeros(X.shape[0], dtype=float)
         for r in star:
-            self.update_best(bestr, bestq, r, Y)
+            if self.rule_validator.validate_rule(r):
+                self.update_best(bestr, bestq, r, Y)
         # loop until star has rules
         self.inter_rules = [] # store intermediate rules
+        rlength = 0
         while star:
+            rlength += 1
             # specialize each rule in star
             new_star = []
             for r in star:
-                #r.create_model()
-                #print("s", r, r.curr_class_dist)
-                # skip rules with pure distributions
                 if r.curr_class_dist[r.target_class] == r.curr_class_dist.sum():
                     continue
                 # refine rule
@@ -120,7 +125,7 @@ class RulesStar(_RuleLearner):
             inst_quality = np.zeros((X.shape[0], nrules))
             for ri, r in enumerate(new_star):
                 if self.target_instances: # learn rules for specific instances only
-                    c2 = np.zeros(r.covered_examples.shape, dtype = bool)
+                    c2 = np.zeros(r.covered_examples.shape, dtype=bool)
                     c2[self.target_instances] = 1
                     cov = np.where(c2 & r.covered_examples & (r.target_class == Y))[0]
                 else:
@@ -144,7 +149,7 @@ class RulesStar(_RuleLearner):
                 if not cnt:
                     break
                 elts = cnt.most_common()
-                for e, counts in elts:
+                for e, _ in elts:
                     if e in new_star_set: continue
                     new_star_set.add(e)
                     if len(new_star_set) >= self.width:
@@ -155,7 +160,6 @@ class RulesStar(_RuleLearner):
                 rl = []
                 vis = set()
                 for ri, r in enumerate(bestr):
-                    # add r
                     if r is None:
                         continue
                     self.add_rule(rl, vis, r)
@@ -180,7 +184,15 @@ class RulesStar(_RuleLearner):
                     # add parent rule
                     self.add_rule(rule_list, visited, pr)
                     pr = self.create_parent(pr, X, Y, W)
-        rule_list = sorted(rule_list, key = lambda r: -r.quality)
+        rule_list = sorted(rule_list, key=lambda r: -r.quality)
+        if self.min_unique_examples > 1:
+            filter_rules = []
+            covered = np.zeros(X.shape[0], dtype=bool)
+            for r in rule_list:
+                if (~covered & r.covered_examples).sum() >= self.min_unique_examples:
+                    filter_rules.append(r)
+                    covered |= r.covered_examples
+            rule_list = filter_rules
         return self.classifier(domain=self.domain, rule_list=rule_list)
 
     def create_initial_star(self, X, Y, W, prior):
@@ -204,25 +216,23 @@ class RulesStar(_RuleLearner):
             return None
         selectors = rule.selectors[:-1]
         new_rule = Rule(selectors=selectors,
-                         domain=rule.domain,
-                         initial_class_dist=rule.initial_class_dist,
-                         prior_class_dist=rule.prior_class_dist,
-                         quality_evaluator=rule.quality_evaluator,
-                         complexity_evaluator=rule.complexity_evaluator,
-                         significance_validator=rule.significance_validator,
-                         general_validator=rule.general_validator)
+                        domain=rule.domain,
+                        initial_class_dist=rule.initial_class_dist,
+                        prior_class_dist=rule.prior_class_dist,
+                        quality_evaluator=rule.quality_evaluator,
+                        complexity_evaluator=rule.complexity_evaluator,
+                        significance_validator=rule.significance_validator,
+                        general_validator=rule.general_validator)
         new_rule.filter_and_store(X, Y, W, rule.target_class)
         new_rule.do_evaluate()
         return new_rule
 
     def calculate_evds(self, data):
-        evd_creator = EVDFitter(max_rule_length = self.max_rule_length)
+        evd_creator = EVDFitter(max_rule_length=self.max_rule_length)
         self.evds = evd_creator(data).evds
 
     @staticmethod
     def add_rule(rule_list, visited, rule):
-        if rule.quality < rule.prior_class_dist[rule.target_class] / rule.prior_class_dist.sum() + 0.01:
-            return
         rkey = (rule.covered_examples.tostring(), rule.target_class)
         if rkey not in visited:
             rule.create_model()
@@ -234,12 +244,12 @@ class RulesStar(_RuleLearner):
                   (rule.quality-0.005 > bestq)
         bestr[indices] = rule
         bestq[indices] = rule.quality
-    
+
     @property
     def m(self):
         return self._m
 
-    @m.setter 
+    @m.setter
     def m(self, m):
         self._m = m
         self.evaluator_evc.m = m
@@ -253,6 +263,15 @@ class RulesStar(_RuleLearner):
     def max_rule_length(self, max_rule_length):
         self._max_rule_length = max_rule_length
         self.rule_finder.general_validator.max_rule_length = max_rule_length
+
+    @property
+    def min_covered_examples(self):
+        return self._min_covered_examples
+
+    @min_covered_examples.setter
+    def min_covered_examples(self, min_covered_examples):
+        self._min_covered_examples = min_covered_examples
+        self.rule_finder.general_validator.min_covered_examples = min_covered_examples
 
     @property
     def evc(self):
@@ -278,7 +297,7 @@ class RulesStar(_RuleLearner):
     def default_alpha(self, default_alpha):
         self.rule_validator_norm.default_alpha = default_alpha
         self.rule_validator_evc.default_alpha = default_alpha
-    
+
     @property
     def parent_alpha(self):
         return self.specialization_validator.default_alpha
@@ -288,7 +307,7 @@ class RulesStar(_RuleLearner):
         self.specialization_validator_norm.parent_alpha = parent_alpha
         self.specialization_validator_evc.parent_alpha = parent_alpha
 
-    @property 
+    @property
     def evds(self):
         return self._evds
 
@@ -374,6 +393,7 @@ class EVCEvaluator(Evaluator):
     """ Evaluates a rule with the extreme value correction (EVC). """
     def __init__(self, m=2, evds=None):
         self.evds = evds
+        self.m = m
 
     def evaluate_rule(self, rule):
         # predicted class
@@ -384,9 +404,8 @@ class EVCEvaluator(Evaluator):
         dist_sum = dist.sum()
         acc = dist[tc]  / dist_sum
         # prior class distribution
-        # TODO: default_rule has no influence anymore
-        if hasattr(rule, "default_rule") and rule.default_rule.length>0:
-            dr_length = rule.default_rule.length - 1 # rule.default_rule.length
+        if hasattr(rule, "default_rule") and rule.default_rule.length > 0:
+            dr_length = rule.default_rule.length
         else:
             dr_length = 0
         p_dist = rule.prior_class_dist
@@ -397,7 +416,7 @@ class EVCEvaluator(Evaluator):
         if rule.length > len(self.evds[tc]):
             evd = self.evds[tc][-1]
         else:
-            evd = self.evds[tc][rule.length-dr_length] #-dr_length]
+            evd = self.evds[tc][rule.length-dr_length]
 
         if evd.mu < 0.0001: # return as if rule distribution is not optimistic
             return (dist[tc] + self.m * pa) / (dist_sum + self.m)
@@ -405,7 +424,7 @@ class EVCEvaluator(Evaluator):
         # compute chi
         n, N = dist.sum(), p_dist.sum()
         chi = get_chi(dist[tc], n-dist[tc], p_dist[tc], N-p_dist[tc])
-
+        corr_chi = 0.
         # corrected estimate
         if (evd.mu-chi)/evd.beta < -200 or acc <= pa:
             ePos = dist[tc]
@@ -413,21 +432,18 @@ class EVCEvaluator(Evaluator):
             ePos = pa * dist_sum
         else:
             diff = LNLNChiSq(evd, chi)
-            try:
-                corr_chi = brentq(diff, 0, chi, xtol=0.1, maxiter=20)
-            except RuntimeError:
-                corr_chi = 0
+            if diff(chi) >= 0:
+                corr_chi = chi
+            else:
+                corr_chi = brentq(diff, 0, chi, xtol=0.01, maxiter=20)
             if chi > 0:
                 diff = LRInv(dist_sum, p_dist[tc], prior_sum, corr_chi)
-                try:
-                    ePos = brentq(diff, pa*dist_sum, dist[tc], xtol=0.1, maxiter=20)
-                except RuntimeError:
-                    ePos = pa * dist_sum
+                ePos = brentq(diff, pa*dist_sum, dist[tc], xtol=0.1, maxiter=20)
             else:
                 ePos = pa * dist_sum
         q = (ePos + self.m * pa) / (dist_sum + self.m)
         # special case: when argument is evaluated low
-        if hasattr(rule, "default_rule") and rule.default_rule.length>0 and \
+        if hasattr(rule, "default_rule") and rule.default_rule.length > 0 and \
                 rule.default_rule.length == rule.length and q < pa+0.01:
             return min(pa + 0.01, acc)
         if q > pa:
@@ -448,9 +464,8 @@ class EVCValidator(Validator):
         dist = rule.curr_class_dist
 
         if self.default_alpha < 1.0:
-            # TODO: fix that, default_rule has no influence any more
             if hasattr(rule, "default_rule") and rule.default_rule.length > 0:
-                dr_length = rule.default_rule.length - 1 # rule.default_rule.length
+                dr_length = rule.default_rule.length
             else:
                 dr_length = 0
             # prior class distribution
@@ -478,10 +493,15 @@ class EVCValidator(Validator):
                 return False
 
         return True
- 
+
+
 class LNLNChiSq:
     def __init__(self, evd, chi):
-        self.exponent = (evd.mu-chi)/evd.beta
+        exponent = np.exp((evd.mu-chi)/evd.beta)
+        if exponent < 0.01:
+            self.p = exponent
+        else:
+            self.p = 1.0 - np.exp(-exponent)
 
     def __call__(self, chix):
         if chix > 1400:
@@ -492,10 +512,8 @@ class LNLNChiSq:
             chip = gammaincc(0.5, chix/2)*0.5
         if chip <= 0.0:
             return -1000
-        if chip < 1e-6:
-            return np.log(chip)-self.exponent
-        return np.log(-np.log(1-chip))-self.exponent
- 
+        return chip - self.p
+
 class LRInv:
     def __init__(self, n, P, N, corr_chi):
         self.n = n
@@ -575,11 +593,15 @@ class EVDFitter(RulesStar):
                     max_vals[k+1].extend([r.quality for r in self.inter_rules[ki]])
             # calculate extreme value distributions
             evd_cls = {0:EVDDist(0, 1, 0)}
+            prev_median = 0
             for k in range(1, self.max_rule_length+1):
-                median = bn.median(max_vals[k])
-                mu = median + 2*np.log(np.log(2))
+                median = max(prev_median, bn.median(max_vals[k]))
+                print("med", median)
+                prev_median = median
+                beta = 2
+                mu = median + beta*np.log(np.log(2))
                 if mu > 0.1:
-                    evd_cls[k] = EVDDist(mu, 2, median)
+                    evd_cls[k] = EVDDist(mu, beta, median)
                 else:
                     evd_cls[k] = EVDDist(0, 1, 0)
             evd[cls] = evd_cls

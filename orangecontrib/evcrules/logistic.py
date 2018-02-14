@@ -4,9 +4,8 @@ import scipy.optimize as opt
 from Orange.data import Table, Domain
 from Orange.classification import Learner, Model
 from Orange.evaluation import CrossValidation, LogLoss
-from Orange.preprocess import (RemoveNaNClasses, RemoveNaNColumns,
-                               Impute, Normalize, Continuize)
-from Orange.preprocess.transformation import Normalizer
+from Orange.preprocess import RemoveNaNColumns, Impute, Normalize, Continuize
+from Orange.data.filter import HasClass
 
 import orangecontrib.evcrules.rules as rules
 
@@ -29,13 +28,14 @@ class LRRulesLearner(Learner):
     TODO: weights are not supported yet.
     """
     name = 'logreg rules'
-    preprocessors = [RemoveNaNClasses(),
+    preprocessors = [HasClass(),
                      RemoveNaNColumns(),
                      Impute()]
 
     def __init__(self, preprocessors=None, penalty=1, opt_penalty=False,
                  rule_learner=None, basic_attributes=True,
-                 fit_intercept=True, intercept_scaling=2):
+                 fit_intercept=True, intercept_scaling=2,
+                 penalize_rules=True):
         """
         Parameters
         ----------
@@ -56,6 +56,7 @@ class LRRulesLearner(Learner):
         self.fit_intercept = fit_intercept
         self.intercept_scaling = intercept_scaling
         self.basic_attributes = basic_attributes
+        self.penalize_rules = penalize_rules
         # Post rule learning preprocessing should not decrease the
         # number of examples.
         self.post_rule_preprocess = [Normalize(), Continuize()]
@@ -85,7 +86,7 @@ class LRRulesLearner(Learner):
         w = []
         se = []
         if len(self.domain.class_var.values) > 2:
-            for cli, cls in enumerate(self.domain.class_var.values):
+            for cli, _ in enumerate(self.domain.class_var.values):
                 # create class with domain {-1, 1}
                 yc = np.ones_like(Y)
                 yc[Y != cli] = -1
@@ -129,8 +130,11 @@ class LRRulesLearner(Learner):
     def get_gamma(self, X, rules):
         gamma = [0] * X.shape[1]
         for r in rules:
-            gamma.append(r.curr_class_dist[r.target_class] -
-                         r.quality * r.curr_class_dist.sum())
+            if self.penalize_rules:
+                gamma.append(r.curr_class_dist[r.target_class] -
+                             r.quality * r.curr_class_dist.sum())
+            else:
+                gamma.append(0)
         if self.fit_intercept:
             gamma.append(0)
         return np.array(gamma)
@@ -219,8 +223,8 @@ class LRRulesClassifier(Model):
 
     def predict_storage(self, data):
         data_post = data.from_table(self.postrule_domain, data)
-        Xr = np.concatenate([data_post.X]+[r.evaluate_data(data.X)[:, np.newaxis] for r in self.rule_list],
-                            axis=1)
+        Xr = np.concatenate([data_post.X]+[r.evaluate_data(data.X)[:, np.newaxis]
+                                           for r in self.rule_list], axis=1)
         if self.fit_intercept:
             Xr = LRRulesLearner.add_intercept(self.intercept_scaling, Xr)
         probs = self.predict_proba(Xr)
@@ -230,10 +234,10 @@ class LRRulesClassifier(Model):
     def predict_proba(self, X):
         ps = np.empty((X.shape[0], len(self.domain.class_var.values)),
                       dtype=np.float)
-        for i, cl in enumerate(self.domain.class_var.values):
+        for i, _ in enumerate(self.domain.class_var.values):
             z = X.dot(self.w[i])
-            ps[:,i] = LRRulesLearner.phi(z)
-        ps = ps / np.linalg.norm(ps, ord=1, axis=1)[:,np.newaxis]
+            ps[:, i] = LRRulesLearner.phi(z)
+        ps = ps / np.linalg.norm(ps, ord=1, axis=1)[:, np.newaxis]
         return ps
 
     def __str__(self):
@@ -247,9 +251,9 @@ class LRRulesClassifier(Model):
                            for i, cl in enumerate(self.domain.class_var.values)]) + \
                 '\t' + 'Attribute' + '\n'
         for ni, n in enumerate(names):
-            desc += '\t'.join(['{:.3}({:.3},{:.3})'.format(self.w[i,ni],
-                                                           self.w[i,ni]-1.96*self.se[i,ni],
-                                                           self.w[i,ni]+1.96*self.se[i,ni])
+            desc += '\t'.join(['{:.3}({:.3},{:.3})'.format(self.w[i, ni],
+                                                           self.w[i, ni]-1.96*self.se[i, ni],
+                                                           self.w[i, ni]+1.96*self.se[i, ni])
                                for i, cl in enumerate(self.domain.class_var.values)]) + \
                     '\t' + n + '\n'
         return desc
